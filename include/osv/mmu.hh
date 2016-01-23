@@ -43,6 +43,20 @@ constexpr inline unsigned pt_index(void *virt, unsigned level)
 
 struct page_allocator;
 
+// [tatetian]
+// Virtual Memeory Area (VMA) manages distinct regions of address space
+//
+// http://duartes.org/gustavo/blog/post/how-the-kernel-manages-your-memory/
+//
+// A VMA is like a contract between your program and the kernel. You ask for
+// something to be done (memory allocated, a file mapped, etc.), the kernel says
+// “sure”, and it creates or updates the appropriate VMA. But it does not
+// actually honor the request right away, it waits until a page fault happens to
+// do real work. The kernel is a lazy, deceitful sack of scum; this is the
+// fundamental principle of virtual memory. It applies in most situations, some
+// familiar and some surprising, but the rule is that VMAs record what has been
+// agreed upon, while PTEs reflect what has actually been done by the lazy
+// kernel.
 class vma {
 public:
     vma(addr_range range, unsigned perm, unsigned flags, bool map_dirty, page_allocator *page_ops = nullptr);
@@ -88,6 +102,8 @@ public:
     bool operator()(addr_range x, const vma& y) const { return x.end() <= y.start(); }
 };
 
+// [tatetian]
+// A VMA that does not map a file is anonymous
 class anon_vma : public vma {
 public:
     anon_vma(addr_range range, unsigned perm, unsigned flags);
@@ -180,6 +196,8 @@ inline bool pte_is_cow(pt_element<N> pte)
     return false;
 }
 
+// [tatetian]
+// cow is copy-on-write?
 template<>
 inline bool pte_is_cow(pt_element<0> pte)
 {
@@ -234,7 +252,7 @@ template<int N>
 inline pt_element<N> make_leaf_pte(hw_ptep<N> ptep, phys addr,
                                    unsigned perm = perm_rwx,
                                    mattr mem_attr = mattr_default)
-{   
+{
     static_assert(pt_level_traits<N>::leaf_capable::value, "non leaf pte");
     return make_pte<N>(addr, true, perm, mem_attr);
 }

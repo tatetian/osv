@@ -248,6 +248,10 @@ unsigned pool::get_size()
 static inline void* untracked_alloc_page();
 static inline void untracked_free_page(void *v);
 
+// [tatetian]
+// A pool consists of allocated pages (see `_list`), which has a header (see
+// `page_header`) and a linked list (see `page_header->local_free`) of free
+// object (see `free_object`) of same size (see `_size`).
 void pool::add_page()
 {
     // FIXME: this function allocated a page and set it up but on rare cases
@@ -255,6 +259,9 @@ void pool::add_page()
     // enablment of preemption
     void* page = untracked_alloc_page();
     WITH_LOCK(preempt_lock) {
+	// [tatetian]
+	// Default placement-version of new, which specifies the location to
+	// allocate
         page_header* header = new (page) page_header;
         header->cpu_id = mempool_cpuid();
         header->owner = this;
@@ -285,6 +292,9 @@ void pool::free_same_cpu(free_object* obj, unsigned cpu_id)
     trace_pool_free_same_cpu(this, object);
 
     page_header* header = to_header(obj);
+    // [tatetian]
+    // Free the page containing this object since it will be empty and there
+    // are other free pages
     if (!--header->nalloc && have_full_pages()) {
         if (header->local_free) {
             _free->erase(_free->iterator_to(*header));
@@ -292,7 +302,10 @@ void pool::free_same_cpu(free_object* obj, unsigned cpu_id)
         DROP_LOCK(preempt_lock) {
             untracked_free_page(header);
         }
-    } else {
+    }
+    // [tatetian]
+    // Free the object in this page
+    else {
         if (!header->local_free) {
             if (header->nalloc) {
                 _free->push_front(*header);
@@ -362,6 +375,8 @@ struct mark_smp_allocator_intialized {
         // is not capable of ensuring aligned allocation for small allocations.
         auto buf = aligned_alloc(alignof(garbage_sink),
                     std::max(page_size, sizeof(garbage_sink) * ncpus * ncpus));
+	// [tatetian]
+	// FIXME: Shouldn't new with default placement?
         pcpu_free_list = new garbage_sink**[ncpus];
         for (auto i = 0U; i < ncpus; i++) {
             pcpu_free_list[i] = new garbage_sink*[ncpus];
@@ -533,6 +548,19 @@ void reclaimer::wait_for_memory(size_t mem)
     _oom_blocked.wait(mem);
 }
 
+// [tatetian]
+// Buddy Memory Allocation
+// https://en.wikipedia.org/wiki/Buddy_memory_allocation
+//
+// Every memory block in this system has an order, where the order is an integer
+// ranging from 0 to a specified upper limit. The size of a block of order n is
+// proportional to 2n, so that the blocks are exactly twice the size of blocks
+// that are one order lower. Power-of-two block sizes make address computation
+// simple, because all buddies are aligned on memory address boundaries that are
+// powers of two. When a larger block is split, it is divided into two smaller
+// blocks, and each smaller block becomes a unique buddy to the other. A split
+// block can only be merged with its unique buddy block, which then reforms the
+// larger block they were split from.
 class page_range_allocator {
 public:
     static constexpr unsigned max_order = 16;
@@ -566,16 +594,30 @@ public:
     }
 
 private:
+    // [tatetian]
+    // Insert the page range into the one of lists maintained by the allocator.
+    // TODO: Why UseBitmap is an argument of template rather than function
     template<bool UseBitmap = true>
     void insert(page_range& pr) {
+	// assert(pr.size >= page_size)
+	//
+	// [tatetian]
+	// The starting address of the page range is the same as that of the
+	// page_range data structure itself, i.e., a header
         auto addr = static_cast<void*>(&pr);
+	// [tatetian]
+	// Point to the header at the end of the page range
         auto pr_end = static_cast<page_range**>(addr + pr.size - sizeof(page_range**));
         *pr_end = &pr;
+	// For huge range, record in a list
         auto order = ilog2(pr.size / page_size);
         if (order >= max_order) {
             _free_huge.insert(pr);
             _not_empty[max_order] = true;
         } else {
+	    // For small enough range, record in a list of its size.
+	    // Every page range of some order has a size of at least 2^order *
+	    // page_size
             _free[order].push_front(pr);
             _not_empty[order] = true;
         }
@@ -609,6 +651,8 @@ private:
         idx -= reinterpret_cast<uintptr_t>(mmu::phys_mem);
         return idx / page_size;
     }
+    // [tatetian]
+    // Set the part of bitmap that represents the `page_range` to `value`
     void set_bits(page_range& pr, bool value, bool fill = false) {
         auto end = pr.size / page_size - 1;
         if (fill) {
@@ -657,6 +701,8 @@ T* page_range_allocator::bitmap_allocator<T>::allocate(size_t n)
 {
     auto size = get_size(n);
     on_alloc(size);
+    // [tatetian]
+    // Set UseBitmap as false to prevent this function from evoking recursively
     auto pr = free_page_ranges.alloc<false>(size);
     return reinterpret_cast<T*>(pr);
 }
@@ -680,11 +726,14 @@ page_range* page_range_allocator::alloc(size_t size)
     }
     auto bitset = _not_empty.to_ulong();
     if (exact_order) {
+	// exclude orders bits that are below exact_order
         bitset &= ~((1 << exact_order) - 1);
     }
     auto order = count_trailing_zeros(bitset);
 
     page_range* range = nullptr;
+    // [tatetian]
+    // if no big enough order has free buffers
     if (!bitset) {
         if (!exact_order || _free[exact_order - 1].empty()) {
             return nullptr;
@@ -756,6 +805,8 @@ page_range* page_range_allocator::alloc_aligned(size_t size, size_t offset,
 
 void page_range_allocator::free(page_range* pr)
 {
+    // [tatetian]
+    // merge with neighbor page_ranges
     if (_bitmap[get_bitmap_idx(*pr) - 1]) {
         auto pr2 = *(reinterpret_cast<page_range**>(pr) - 1);
         remove(*pr2);
@@ -772,6 +823,8 @@ void page_range_allocator::free(page_range* pr)
 
 void page_range_allocator::initial_add(page_range* pr)
 {
+    // [tatetian]
+    // Get the max page frame number corresponding to this page range
     auto idx = get_bitmap_idx(*pr) + pr->size / page_size;
     if (idx > _bitmap.size()) {
         auto prev_idx = get_bitmap_idx(*pr) - 1;
@@ -1225,6 +1278,9 @@ static sched::cpu::notifier _notifier([] () {
     *percpu_l1 = new l1(sched::cpu::current());
     // N per-cpu threads for L1 page pool, 1 thread for L2 page pool
     // Switch to smp_allocator only when all the N + 1 threads are ready
+    //
+    // [tatetian]
+    // Initialize nCPUs x L1 page buffers + 1 L2 page buffer
     if (smp_allocator_cnt++ == sched::cpus.size()) {
         smp_allocator = true;
     }
@@ -1239,8 +1295,10 @@ class l2 global_l2;
 // Percpu thread for L1 page pool
 void l1::fill_thread()
 {
+    // [tatetian] Run once
     sched::thread::wait_until([] {return smp_allocator;});
     auto& pbuf = get_l1();
+    // [tatetian] Loop forever
     for (;;) {
         sched::thread::wait_until([&] {
                 WITH_LOCK(preempt_lock) {
@@ -1313,11 +1371,15 @@ bool l1::free_page_local(void* v)
 // Global thread for L2 page pool
 void l2::fill_thread()
 {
+    // [tatetian] Run once
+    // Initialize nCPUs x L1 page buffers + 1 L2 page buffer
     if (smp_allocator_cnt++ == sched::cpus.size()) {
         smp_allocator = true;
     }
 
     sched::thread::wait_until([] {return smp_allocator;});
+
+    // [tatetian] Loop forever
     for (;;) {
         sched::thread::wait_for([=] {
                 auto nr = get_nr();
@@ -1345,6 +1407,9 @@ void l2::refill()
                 // of waiting here instead of oom'ing directly is that we can have
                 // less points in the code where we can oom, and be more
                 // predictable.
+		//
+		// [tatetian]
+		// oom = out of memory
                 reclaimer_thread.wait_for_memory(mmu::page_size);
             }
             auto total_size = 0;
@@ -1511,6 +1576,8 @@ void  __attribute__((constructor(init_prio::mempool))) setup()
 
 }
 
+// [tatetian]
+// Export C linkage functions
 extern "C" {
     void* malloc(size_t size);
     void free(void* object);
@@ -1522,18 +1589,28 @@ static inline void* std_malloc(size_t size, size_t alignment)
     if ((ssize_t)size < 0)
         return libc_error_ptr<void *>(ENOMEM);
     void *ret;
+    // [tatetian]
+    // malloc for small objects (0 ~ 1/2 page_size)
     if (size <= memory::pool::max_object_size && alignment <= size && smp_allocator) {
         size = std::max(size, memory::pool::min_object_size);
         unsigned n = ilog2_roundup(size);
         ret = memory::malloc_pools[n].alloc();
+	// [tatetian]
+	// TODO: why translate?
         ret = translate_mem_area(mmu::mem_area::main, mmu::mem_area::mempool,
                                  ret);
         trace_memory_malloc_mempool(ret, size, 1 << n, alignment);
-    } else if (size <= mmu::page_size && alignment <= mmu::page_size) {
+    }
+    // [tatetian]
+    // malloc for medium objects (1/2 ~ 1 page_sie)
+    else if (size <= mmu::page_size && alignment <= mmu::page_size) {
         ret = mmu::translate_mem_area(mmu::mem_area::main, mmu::mem_area::page,
                                        memory::alloc_page());
         trace_memory_malloc_page(ret, size, mmu::page_size, alignment);
-    } else {
+    }
+    // [tatetian]
+    // malloc for large objects (> 1 page_size)
+    else {
         ret = memory::malloc_large(size, alignment);
     }
     memory::tracker_remember(ret, size);

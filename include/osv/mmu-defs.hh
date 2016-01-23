@@ -15,8 +15,6 @@
 
 struct exception_frame;
 
-struct exception_frame;
-
 namespace mmu {
 
 constexpr uintptr_t page_size = 4096;
@@ -42,13 +40,35 @@ constexpr mem_area identity_mapped_areas[] = {
     mem_area::mempool,
 };
 
+// [tatetian]
+// The size of memory area is 16TB
 constexpr uintptr_t mem_area_size = uintptr_t(1) << 44;
 
+// [tatetian]
+// Virtual address space (see virt_to_phys)
+// <elf_start>
+//	...
+//	virtual memory space (phys = virt)
+//	...
+// <elf_end>
+// ...
+//	   |<-44 bits->|
+// 0xffff 8000 0000 0000 <- main mem_area base
+//	...
+//	virtual memory space (phys = virt - 8000 0000 0000 0000)
+//	...
+// 0xffff 9000 0000 0000 <- page mem_area base
+// ...
+// 0xffff a000 0000 0000 <- mempool mem_area base
+// ...
+// 0xffff b000 0000 0000 <- debug mem_area base
 constexpr uintptr_t get_mem_area_base(mem_area area)
 {
     return 0xffff800000000000 | uintptr_t(area) << 44;
 }
 
+// [tatetian]
+// Return the mem_area that addr belongs to
 static inline mem_area get_mem_area(void* addr)
 {
     return mem_area(reinterpret_cast<uintptr_t>(addr) >> 44 & 7);
@@ -60,7 +80,12 @@ constexpr void* translate_mem_area(mem_area from, mem_area to, void* addr)
                               - get_mem_area_base(from) + get_mem_area_base(to));
 }
 
+// [tatetian]
+// TODO: main_mem_area_base and phys_mem are essentially the same, why need both?
 constexpr uintptr_t main_mem_area_base = get_mem_area_base(mem_area::main);
+// [tatetian]
+// It seems that all memory addresses below phys_mem are physical addresses,
+// and those above are virtual addresses.
 static char* const phys_mem = reinterpret_cast<char*>(main_mem_area_base);
 // area for debug allocations:
 constexpr uintptr_t debug_mem_area_base = get_mem_area_base(mem_area::debug);
@@ -190,7 +215,10 @@ class hw_ptep_impl_base {
 protected:
     hw_ptep_impl_base(pt_element<N> *ptep) : p(ptep) {}
     union {
+	// [tatetian]
+	// for RCU implementation
         std::atomic<pt_element<N>>* x;
+	// for normal implementation
         pt_element<N>* p;
     };
 };
@@ -220,6 +248,9 @@ protected:
     using hw_ptep_impl_base<N>::x;
 };
 
+// [tatetian]
+// Use read-copy-update protected implementation for level 1 and 2;
+// Use ordinary implementation for level 0, 3, and 4.
 template<int N>
 using hw_ptep_base = typename std::conditional<
                 std::integral_constant<bool, (N == 1) || (N == 2)>::value, // only L1 and L2 PTs are RCU protected

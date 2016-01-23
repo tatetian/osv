@@ -149,6 +149,8 @@ static inline bool dbg_mem_is_dev(phys addr)
     return addr >= mmu::device_range_start && addr < mmu::device_range_stop;
 }
 
+// [tatetian]
+// PTE = Page Table Entry
 template<int N>
 pt_element<N> make_pte(phys addr, bool leaf, unsigned perm = perm_rwx,
                        mattr mem_attr = mattr_default)

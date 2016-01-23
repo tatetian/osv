@@ -45,6 +45,8 @@ inline unsigned count_trailing_zeros(unsigned long long n)
     return __builtin_ctzll(n);
 }
 
+// [tatetian]
+// ilog2 = ceiling(log2(float(n)))
 template <typename T>
 inline
 unsigned ilog2_roundup(T n)
@@ -55,6 +57,8 @@ unsigned ilog2_roundup(T n)
     return sizeof(T)*8 - count_leading_zeros(n - 1);
 }
 
+// [tatetian]
+// ilog2 = floor(log2(float(n)))
 template <typename T>
 inline
 unsigned ilog2(T n)

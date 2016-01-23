@@ -32,8 +32,12 @@ const size_t page_size = 4096;
 
 extern size_t phys_mem_size;
 
+// [tatetian]
+// This function has never been called
 void setup_free_memory(void* start, size_t bytes);
 
+// [tatetian]
+// TODO: ?
 namespace bi = boost::intrusive;
 
 struct free_object {
@@ -88,11 +92,17 @@ public:
 };
 
 struct page_range {
+    // [tatetian]
+    // explicit keyword prevents the complier from converting size_t to
+    // page_range implicitly. It's a good pratice to explicit single-argument
+    // constructor function.
     explicit page_range(size_t size);
     bool operator<(const page_range& pr) const {
         return size < pr.size;
     }
     size_t size;
+    // [tatetian]
+    // TODO: ?
     boost::intrusive::set_member_hook<> set_hook;
     boost::intrusive::list_member_hook<> list_hook;
 };
@@ -261,7 +271,8 @@ virt_to_phys(const phys_ptr<T>& p)
     return mmu::virt_to_phys_dynamic_phys(p.get());
 }
 
-
+// [tatetian]
+// Thread-Local Variable (TLA)
 extern __thread unsigned emergency_alloc_level;
 
 class reclaimer_lock_type {

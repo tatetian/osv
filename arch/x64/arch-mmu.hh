@@ -11,6 +11,8 @@
 namespace mmu {
 extern uint8_t phys_bits, virt_bits;
 constexpr uint8_t rsvd_bits_used = 1;
+// [tatetian]
+// TODO: 52 = 64 - 12(4KB) ?
 constexpr uint8_t max_phys_bits = 52 - rsvd_bits_used;
 
 enum class mattr {
@@ -18,11 +20,38 @@ enum class mattr {
 };
 constexpr mattr mattr_default = mattr::normal;
 
+// [tatetian]
+// The mask for PFN in pt_element
 constexpr uint64_t pte_addr_mask(bool large)
 {
+    // [tatetian]
+    //		0007 ffff ffff ffff (1ull << max_phys_bits)
+    //	&	ffff ffff ffff f000 (~(0xfffull))
+    //  =	0007 ffff ffff f000 (if large == false)
+    //  &	ffff ffff ffff efff (~(uint64_t(large) << page_size_shift))
+    //  =	0007 ffff ffff e000 (if large == true )
+    //
+    //  The length of the mask is
+    //		39 bits, if large is false;
+    //		38 bits, if large is true.
     return ((1ull << max_phys_bits) - 1) & ~(0xfffull) & ~(uint64_t(large) << page_size_shift);
 }
 
+// [tatetian]
+// Bits
+// 0 - valid
+// 1 - writable
+// 2 - user
+// 3 - ?
+// 4 - ?
+// 5 - accessed (has been written or read; set by processor, reset by kernel)
+// 6 - dirty (has been written; set by processor, reset by kernel)
+// 7 - large
+// 8..12/13 - unknown
+// 12/13...50 - PFN
+// 51 - reserved
+// 53...62 - sw
+// 63 - executable
 template<int N>
 class pt_element : public pt_element_common<N> {
 public:

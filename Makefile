@@ -1948,3 +1948,11 @@ $(zfs-cmd-objects): CFLAGS += -Wno-switch -D__va_list=__builtin_va_list '-DTEXT_
 $(out)/zfs.so: $(zfs-cmd-objects) $(out)/libzfs.so
 	$(makedir)
 	$(call quiet, $(CC) $(CFLAGS) -o $@ $(zfs-cmd-objects) -L$(out) -lzfs, LINK zfs.so)
+
+# Added by Tate
+# Print vars to help understand the Makefile
+.PHONY: printvars
+printvars:
+	@$(foreach V,$(sort $(.VARIABLES)), \
+		$(if $(filter-out environ% default automatic, \
+			$(origin $V)),$(info $V=$($V) # -> $(value $V))))

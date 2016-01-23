@@ -50,6 +50,14 @@ struct osv_multiboot_info_type {
     u32 tsc_disk_done, tsc_disk_done_hi;
 } __attribute__((packed));
 
+// [tatetian]
+// e820 is shorthand to refer to the facility by which the BIOS of x86-based
+// computer systems reports the memory map to the operating system or boot
+// loader. It is accessed via the int 15h call, by setting the AX register to
+// value E820 in hexadecimal. It reports which memory address ranges are usable
+// and which are reserved for use by the BIOS.
+//
+// See also http://wiki.osdev.org/Detecting_Memory_(x86) for more about e820.
 struct e820ent {
     u32 ent_size;
     u64 addr;
@@ -139,6 +147,10 @@ void arch_setup_free_memory()
 
     auto c = processor::cpuid(0x80000000);
     if (c.a >= 0x80000008) {
+	// [tatetian]
+	// Get the linear/physical address size
+	// Bits 07 - 00 of EAX: Physical Address Bits.
+	// Bits 15 - 08 of EAX: Linear Address Bits.
         c = processor::cpuid(0x80000008);
         mmu::phys_bits = c.a & 0xff;
         mmu::virt_bits = (c.a >> 8) & 0xff;
