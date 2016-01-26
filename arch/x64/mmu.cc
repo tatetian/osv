@@ -115,6 +115,9 @@ void flush_tlb_all()
 
 static pt_element<4> page_table_root __attribute__((init_priority((int)init_prio::pt_root)));
 
+// [tatetian]
+// On x86-64, there is only one single root for page table, regardless of
+// the virtual address
 pt_element<4> *get_root_pt(uintptr_t virt __attribute__((unused))) {
     return &page_table_root;
 }

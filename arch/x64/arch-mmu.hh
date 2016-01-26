@@ -32,8 +32,8 @@ constexpr uint64_t pte_addr_mask(bool large)
     //  =	0007 ffff ffff e000 (if large == true )
     //
     //  The length of the mask is
-    //		39 bits, if large is false;
-    //		38 bits, if large is true.
+    //		12nd bit to 50th bit (39 bits), if large is false;
+    //		13rd bit to 50th bit (38 bits), if large is true.
     return ((1ull << max_phys_bits) - 1) & ~(0xfffull) & ~(uint64_t(large) << page_size_shift);
 }
 
@@ -63,6 +63,8 @@ public:
 
 template<int N>
 inline bool pt_element_common<N>::empty() const { return !x; }
+// [tatetian]
+// empty is a special case of invalid
 template<int N>
 inline bool pt_element_common<N>::valid() const { return x & 1; }
 template<int N>

@@ -130,6 +130,13 @@ constexpr size_t page_size_level(unsigned level)
     return size_t(1) << (page_size_shift + pte_per_page_shift * level);
 }
 
+// [tatetian]
+// For 64-bit address, the page table uses 4 levels of page table entries:
+//	N = 4, page table root
+//	N = 3 or 2, intermediate levels
+//	N = 1, intermediate level (if 4KB page size)  or leaf level (if 2MB page
+//	size)
+//	N = 0, leaf level (if 4KB page size)
 template<int N>
 struct pt_level_traits {
     typedef typename std::integral_constant<bool, N == 0 || N == 1>::type leaf_capable;
@@ -269,6 +276,11 @@ public:
     pt_element<N> exchange(pt_element<N> newval) {
         return x->exchange(newval);
     }
+
+    // [tatetian]
+    // Compare-and-swap atomic operation: compares the contents of a memory
+    // location to a given value and, only if they are the same, modifies the
+    // contents of that memory location to a given new value
     bool compare_exchange(pt_element<N> oldval, pt_element<N> newval) {
         return x->compare_exchange_strong(oldval, newval, std::memory_order_relaxed);
     }

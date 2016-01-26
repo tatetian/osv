@@ -80,8 +80,16 @@ void setup_temporary_phys_map()
     auto pt = reinterpret_cast<u64*>(cr3);
     for (auto&& area : mmu::identity_mapped_areas) {
         auto base = reinterpret_cast<void*>(get_mem_area_base(area));
+	// [tatetian]
+	// I believe pt[0], which is the initial page table, should have been
+	// initialized somewhere by assembly code
         pt[mmu::pt_index(base, 3)] = pt[0];
     }
+    // [tatetian]
+    // Why no TLB flush? My presumption is that the mapped areas, which reside
+    // at higher part of the linear address space, have never been used up to
+    // this point. As a result, the linear-physical translation of addresses in these
+    // areas have never been cached. Thus, no need to flush the TLB cache.
 }
 
 void for_each_e820_entry(void* e820_buffer, unsigned size, void (*f)(e820ent e))
@@ -162,6 +170,7 @@ void arch_setup_free_memory()
     // setup all memory up to 1GB.  We can't free any more, because no
     // page tables have been set up, so we can't reference the memory being
     // freed.
+    // [tatetian] I just realized how right the comment above is!
     for_each_e820_entry(e820_buffer, e820_size, [] (e820ent ent) {
         // can't free anything below edata, it's core code.
         // FIXME: can free below 2MB.
@@ -177,6 +186,13 @@ void arch_setup_free_memory()
         } else if (ent.addr >= initial_map) {
             return;
         }
+
+	// [tatetian]
+	// It requires page allocation (thus page_range_allocator) to construct
+	// data structure for page tables. For this reason, before evoking
+	// mmu::linear_map, mmu::free_initial_memory_range must be called.
+	//
+	// After the initialization is done, free pages are available for malloc.
         mmu::free_initial_memory_range(ent.addr, ent.size);
     });
     for (auto&& area : mmu::identity_mapped_areas) {
@@ -201,7 +217,7 @@ void arch_setup_free_memory()
             ent = truncate_below(ent, initial_map);
         }
         for (auto&& area : mmu::identity_mapped_areas) {
-        auto base = reinterpret_cast<void*>(get_mem_area_base(area));
+	    auto base = reinterpret_cast<void*>(get_mem_area_base(area));
             mmu::linear_map(base + ent.addr, ent.addr, ent.size, ~0);
         }
         mmu::free_initial_memory_range(ent.addr, ent.size);

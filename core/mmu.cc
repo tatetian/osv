@@ -59,6 +59,13 @@ typedef boost::intrusive::set<vma,
                               bi::optimize_size<true>
                               > vma_list_base;
 
+// [tatetian]
+// vma_list spans the low part of the address space from 0000'0000'0000'0000
+// til 0000'8000'0000'0000.
+//
+// The linear address space is divided into two parts:
+//	The lower/user space:    0000'0000'0000'0000 -> 0000'7FFF'FFFF'FFFF
+//	The higher/kernel space: FFFF'8000'0000'0000 -> FFFF'FFFF'FFFF'FFFF
 struct vma_list_type : vma_list_base {
     vma_list_type() {
         // insert markers for the edges of allocatable area
@@ -185,8 +192,8 @@ bool change_perm(hw_ptep<N> ptep, unsigned int perm)
     // permission is requested, we must also grant read permission.
     // Linux does this too.
     pte.set_valid(true);
-    pte.set_writable(perm & perm_write);
-    pte.set_executable(perm & perm_exec);
+    pte.set_writable(perm & perm_write); // [tatetian] only "downgrade" perm
+    pte.set_executable(perm & perm_exec); // [tatetian] only "downgrade" perm
     pte.set_rsvd_bit(0, !perm);
     ptep.write(pte);
 
@@ -234,6 +241,8 @@ constexpr unsigned pt_index(uintptr_t virt, unsigned level)
     return pt_index(reinterpret_cast<void*>(virt), level);
 }
 
+// [tatetian]
+// Page sizes can be 4KB or 2MB. Handle 1GB in the future
 unsigned nr_page_sizes = 2; // FIXME: detect 1GB pages
 
 void set_nr_page_sizes(unsigned nr)
@@ -290,6 +299,11 @@ public:
     // since it disabled splitting.
     void sub_page(hw_ptep<1> ptep, int level, uintptr_t offset) { return; }
 };
+
+// ===========================================================================
+// [tatetian]
+// Page Table Walker
+// ===========================================================================
 
 template<typename PageOps, int N>
 static inline typename std::enable_if<pt_level_traits<N>::large_capable::value>::type
@@ -384,6 +398,10 @@ private:
     bool descend(hw_ptep<level> ptep) {
         return page_mapper.descend() && !read(ptep).empty() && !read(ptep).large();
     }
+    // [tatetian]
+    // map_range iterates the page table entries of the lower level that
+    // fall in the address range. For N = 0, it's already the lowest level, so
+    // nothing will be done; for N > 1, launch a new map_level<N-1> object.
     template<int N>
     typename std::enable_if<N == 0>::type
     map_range(uintptr_t vcur, size_t size, PageOp& page_mapper, size_t slop,
@@ -421,19 +439,41 @@ private:
         }
         auto pt = follow(parent);
         phys step = phys(1) << (page_size_shift + level * pte_per_page_shift);
+	// [tatetian]
+	// The underlying assumption of this line of code is that address
+	// range [vcur, vend] can be covered by `parent`. Thus, it is the
+	// caller's responsibility to give proper combination of inputs (e.g.
+	// `vcur`, `size` and `parent`). This is partially achieved by `clamp`.
         auto idx = pt_index(vcur, level);
         auto eidx = pt_index(vend, level);
         base_virt += idx * step;
+	// [tatetian]
+	// In current 64-bit machine, only the first 48 bits are used as
+	// address. It is equired that bits 48 through 63 of any virtual address
+	// must be copies of bit 47 (in a manner akin to sign extension), or the
+	// processor will raise an exception.
         base_virt = (int64_t(base_virt) << 16) >> 16; // extend 47th bit
 
         do {
             auto ptep = pt.at(idx);
             uintptr_t vstart1 = vcur, vend1 = vend;
+	    // [tatetian]
+	    // Make sure that vstart1 and vend1 must be between [base_virt,
+	    // base_virt + step - 1] and aligned with slop
             clamp(vstart1, vend1, base_virt, base_virt + step - 1, slop);
+	    // [tatetian]
+	    // If it's possible to treat as leaf node
             if (unsigned(level) < page_mapper.nr_page_sizes() && vstart1 == base_virt && vend1 == base_virt + step - 1) {
                 uintptr_t offset = base_virt - vma_start;
+		// [tatetian]
+		// If it's possible to map to a huge page
                 if (level) {
+		    // [tatetian]
+		    // Skip empty page entry if allowed
                     if (!skip_pte(ptep)) {
+			// [tatetian]
+			// If we can descend into next level, or failed to
+			// build huge page, visit the next level.
                         if (descend(ptep) || !page(page_mapper, ptep, offset)) {
                             intermediate_page_pre(page_mapper, ptep, offset);
                             map_range(vstart1, vend1 - vstart1 + 1, page_mapper, slop, ptep, base_virt);
@@ -441,6 +481,8 @@ private:
                         }
                     }
                 } else {
+		    // [tatetian]
+		    // Skip empty page entry if allowed
                     if (!skip_pte(ptep)) {
                         page(page_mapper, ptep, offset);
                     }
@@ -454,6 +496,11 @@ private:
     }
 };
 
+// ===========================================================================
+// [tatetian]
+// Page Table Operations
+// ===========================================================================
+
 class linear_page_mapper :
         public page_table_operation<allocate_intermediate_opt::yes, skip_empty_opt::no, descend_opt::no> {
     phys start;
@@ -466,6 +513,9 @@ public:
     bool page(hw_ptep<N> ptep, uintptr_t offset) {
         phys addr = start + offset;
         assert(addr < end);
+	// [tatetian]
+	// If N = 0, it must be a leaf; if N = 1, mark it as huge (which implies
+	// it is a leaf).
         ptep.write(make_leaf_pte(ptep, addr, mmu::perm_rwx, mem_attr));
         return true;
     }
@@ -480,6 +530,9 @@ public:
     bool tlb_flush_needed(void) { return false; }
     // this function is called at the very end of operate_range(). vma_operation may do
     // whatever cleanup is needed here.
+    // [tatetian]
+    // FIXME: it seems to me that it's more appropriate to define this function
+    // as virtual
     void finalize(void) { return; }
 
     ulong account_results(void) { return _total_operated; }
@@ -831,9 +884,13 @@ uintptr_t find_hole(uintptr_t start, uintptr_t size)
         }
         if (p->end() >= start && n->start() - p->end() >= size) {
             good_enough = p->end();
+	    // [tatetian]
+	    // If the wanted hole is small, just align with 4KB page size
             if (small) {
                 return good_enough;
             }
+	    // [tatetian]
+	    // Else if it is big, try to align with 2MB huge page size
             if (n->start() - align_up(good_enough, huge_page_size) >= size) {
                 return align_up(good_enough, huge_page_size);
             }
@@ -841,6 +898,8 @@ uintptr_t find_hole(uintptr_t start, uintptr_t size)
         p = n;
         ++n;
     }
+    // [tatetian]
+    // A big enough hole yet not align with 2MB huge page size
     if (good_enough) {
         return good_enough;
     }
@@ -856,6 +915,9 @@ ulong evacuate(uintptr_t start, uintptr_t end)
         i->split(end);
         i->split(start);
         if (contains(start, end, *i)) {
+	    // [tatetian]
+	    // i is about to be deleted. Thus, point i to i - 1 so that ++i
+	    // behave correctly
             auto& dead = *i--;
             auto size = dead.operate_range(unpopulate<account_opt::yes>(dead.page_ops()));
             ret += size;
@@ -899,12 +961,16 @@ private:
     virtual void* fill(void* addr, uint64_t offset, uintptr_t size) {
         return addr;
     }
+    // [tatetian]
+    // Update page table entry. Return true if success, otherwise return false.
     template<int N>
     bool set_pte(void *addr, hw_ptep<N> ptep, pt_element<N> pte) {
         if (!addr) {
             throw std::exception();
         }
         if (!write_pte(addr, ptep, make_empty_pte<N>(), pte)) {
+	    // [tatetian]
+	    // If failed to write pte, free the allocated (huge) page
             if (pt_level_traits<N>::large_capable::value) {
                 memory::free_huge_page(addr, pt_level_traits<N>::size::value);
             } else {

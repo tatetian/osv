@@ -159,6 +159,8 @@ private:
     uintptr_t _real_size;
 };
 
+// [tatetian]
+// Shared Memory File
 class shm_file final : public special_file {
     size_t _size;
     std::unordered_map<uintptr_t, void*> _pages;
@@ -175,8 +177,11 @@ public:
     virtual bool put_page(void *addr, uintptr_t offset, hw_ptep<1> ptep) override;
 };
 
+// [tatetian]
+// File-backed Memory Mapping
 void* map_file(const void* addr, size_t size, unsigned flags, unsigned perm,
               fileref file, f_offset offset);
+// Anonymous Memory Mapping
 void* map_anon(const void* addr, size_t size, unsigned flags, unsigned perm);
 
 error munmap(const void* addr, size_t size);
